@@ -1,14 +1,11 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -O2
-LDFLAGS = -lpcap
+LDFLAGS = -lpcap -lhpdf -lm
 
-TARGET = analyzer
-SRC = analyzer.c
+all: analyzer
 
-all: $(TARGET)
-
-$(TARGET): $(SRC)
-	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LDFLAGS)
+analyzer: analyzer.c
+	$(CC) $(CFLAGS) -o analyzer analyzer.c $(LDFLAGS)
 
 clean:
-	rm -f $(TARGET)
+	rm -f analyzer *.csv *.gp *.png *.pdf

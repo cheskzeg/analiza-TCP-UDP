@@ -8,6 +8,7 @@
 #include <netinet/tcp.h>
 #include <netinet/udp.h>
 #include <arpa/inet.h>
+#include <hpdf.h>
 
 #define MAX_HOSTS 1024
 #define RETRANS_WINDOW 1024
@@ -49,7 +50,12 @@ typedef struct {
     uint16_t payload_len;
 } TcpPacketRecord;
 
-// Znajduje lub dodaje wpis dla adresu IP
+void pdf_error_handler(HPDF_STATUS error_no, HPDF_STATUS detail_no, void *user_data) {
+    (void)user_data;
+    fprintf(stderr, "Blad libharu: error_no=%04X, detail_no=%u\n",
+            (unsigned int)error_no, (unsigned int)detail_no);
+}
+
 HostStats* get_host(HostStats *hosts, size_t *host_count, uint32_t ip) {
     for (size_t i = 0; i < *host_count; i++) {
         if (hosts[i].ip == ip) return &hosts[i];
@@ -63,7 +69,6 @@ HostStats* get_host(HostStats *hosts, size_t *host_count, uint32_t ip) {
     return NULL;
 }
 
-// Sortowanie hostow malejaco po liczbie pakietow
 int cmp_hosts(const void *a, const void *b) {
     const HostStats *ha = (const HostStats *)a;
     const HostStats *hb = (const HostStats *)b;
@@ -72,10 +77,8 @@ int cmp_hosts(const void *a, const void *b) {
     return 0;
 }
 
-// Zapis danych CSV i wywolanie Gnuplota
 void generate_charts(const TrafficStats *stats, const TimeBucket *buckets, size_t num_buckets,
                      const HostStats *hosts, size_t host_count) {
-    // 1. Zapis szeregu czasowego
     FILE *f_time = fopen("traffic_time.csv", "w");
     if (f_time) {
         fprintf(f_time, "Sekunda;TCP_pakiety;UDP_pakiety;TCP_KB;UDP_KB\n");
@@ -87,7 +90,6 @@ void generate_charts(const TrafficStats *stats, const TimeBucket *buckets, size_
         fclose(f_time);
     }
 
-    // 2. Zapis podzialu protokolow
     FILE *f_proto = fopen("protocols.csv", "w");
     if (f_proto) {
         fprintf(f_proto, "Protokol;Pakiety\n");
@@ -97,7 +99,6 @@ void generate_charts(const TrafficStats *stats, const TimeBucket *buckets, size_
         fclose(f_proto);
     }
 
-    // 3. Zapis Top 5 hostow
     FILE *f_hosts = fopen("top_hosts.csv", "w");
     if (f_hosts) {
         fprintf(f_hosts, "IP;Pakiety;SYN\n");
@@ -110,27 +111,19 @@ void generate_charts(const TrafficStats *stats, const TimeBucket *buckets, size_
         fclose(f_hosts);
     }
 
-    // 4. Skrypt Gnuplota generujacy 3 pliki PNG
     FILE *gp = fopen("plot.gp", "w");
-    if (!gp) {
-        perror("Nie mozna utworzyc skryptu plot.gp");
-        return;
-    }
+    if (!gp) return;
 
     fprintf(gp,
         "set datafile separator ';'\n"
         "set grid\n"
-        "set term pngcairo size 900,500 enhanced font 'Sans,10'\n"
-        "\n"
-        "# Wykres 1: Ruch w czasie\n"
+        "set term pngcairo size 900,450 enhanced font 'Sans,10'\n"
         "set output 'wykres_ruch_czas.png'\n"
         "set title 'Natezenie ruchu sieciowego w czasie (pakiety/s)'\n"
         "set xlabel 'Czas od poczatku zrzutu [s]'\n"
         "set ylabel 'Liczba pakietow'\n"
         "plot 'traffic_time.csv' using 1:2 with linespoints lw 2 pt 7 title 'TCP', \\\n"
         "     'traffic_time.csv' using 1:3 with linespoints lw 2 pt 5 title 'UDP'\n"
-        "\n"
-        "# Wykres 2: Udzial protokolow\n"
         "set output 'wykres_protokoly.png'\n"
         "set title 'Liczba pakietow wedlug protokolu'\n"
         "set xlabel 'Protokol'\n"
@@ -140,8 +133,6 @@ void generate_charts(const TrafficStats *stats, const TimeBucket *buckets, size_
         "set boxwidth 0.5\n"
         "set yrange [0:*]\n"
         "plot 'protocols.csv' using 2:xtic(1) notitle lc rgb '#2b5c8f'\n"
-        "\n"
-        "# Wykres 3: Top 5 najbardziej aktywnych adresow IP\n"
         "set output 'wykres_top_ip.png'\n"
         "set title 'Top 5 najbardziej aktywnych zrodlowych adresow IP'\n"
         "set xlabel 'Adres IP'\n"
@@ -151,12 +142,149 @@ void generate_charts(const TrafficStats *stats, const TimeBucket *buckets, size_
     );
     fclose(gp);
 
-    int ret = system("gnuplot plot.gp");
-    if (ret == 0) {
-        printf("Wygenerowano wykresy: wykres_ruch_czas.png, wykres_protokoly.png, wykres_top_ip.png\n");
-    } else {
-        fprintf(stderr, "Blad podczas uruchamiania gnuplot (kod: %d)\n", ret);
+    if (system("gnuplot plot.gp") != 0) {
+        fprintf(stderr, "Ostrzezenie: problem z wywolaniem gnuplot.\n");
     }
+}
+
+void pdf_write_line(HPDF_Page page, HPDF_Font font, float size, float x, float y, const char *text) {
+    HPDF_Page_BeginText(page);
+    HPDF_Page_SetFontAndSize(page, font, size);
+    HPDF_Page_TextOut(page, x, y, text);
+    HPDF_Page_EndText(page);
+}
+
+void generate_pdf_report(const char *pcap_filename, const TrafficStats *stats,
+                         const HostStats *hosts, size_t host_count) {
+    HPDF_Doc pdf = HPDF_New(pdf_error_handler, NULL);
+    if (!pdf) {
+        fprintf(stderr, "Nie mozna zainicjowac dokumentu PDF.\n");
+        return;
+    }
+
+    HPDF_Font font_reg = HPDF_GetFont(pdf, "Helvetica", NULL);
+    HPDF_Font font_bold = HPDF_GetFont(pdf, "Helvetica-Bold", NULL);
+
+    // === STRONA 1: Statystyki, Top Hosty, Anomalie i Wykres 1 ===
+    HPDF_Page page1 = HPDF_AddPage(pdf);
+    HPDF_Page_SetSize(page1, HPDF_PAGE_SIZE_A4, HPDF_PAGE_PORTRAIT);
+    float width = HPDF_Page_GetWidth(page1);
+    float y = HPDF_Page_GetHeight(page1) - 50;
+
+    char buf[256];
+    pdf_write_line(page1, font_bold, 18, 50, y, "RAPORT ANALIZY RUCHU SIECIOWEGO (PCAP)");
+    y -= 22;
+    snprintf(buf, sizeof(buf), "Analizowany plik: %s", pcap_filename);
+    pdf_write_line(page1, font_reg, 11, 50, y, buf);
+    y -= 15;
+
+    // Linia oddzielajaca
+    HPDF_Page_MoveTo(page1, 50, y);
+    HPDF_Page_LineTo(page1, width - 50, y);
+    HPDF_Page_Stroke(page1);
+    y -= 25;
+
+    // Sekcja 1: Podsumowanie ogolne
+    pdf_write_line(page1, font_bold, 13, 50, y, "1. Ogolne statystyki ruchu");
+    y -= 18;
+
+    double duration = stats->last_ts - stats->first_ts;
+    double tcp_pct = stats->total_packets ? (100.0 * stats->tcp_packets / stats->total_packets) : 0.0;
+    double udp_pct = stats->total_packets ? (100.0 * stats->udp_packets / stats->total_packets) : 0.0;
+
+    snprintf(buf, sizeof(buf), "- Czas trwania zrzutu: %.3f s", duration);
+    pdf_write_line(page1, font_reg, 10, 60, y, buf); y -= 15;
+
+    snprintf(buf, sizeof(buf), "- Laczna liczba pakietow: %lu (wolumen: %lu bajtow)",
+             stats->total_packets, stats->total_bytes);
+    pdf_write_line(page1, font_reg, 10, 60, y, buf); y -= 15;
+
+    snprintf(buf, sizeof(buf), "- Ruch TCP: %lu pakietow (%.1f%%) | %lu bajtow",
+             stats->tcp_packets, tcp_pct, stats->tcp_bytes);
+    pdf_write_line(page1, font_reg, 10, 60, y, buf); y -= 15;
+
+    snprintf(buf, sizeof(buf), "- Ruch UDP: %lu pakietow (%.1f%%) | %lu bajtow",
+             stats->udp_packets, udp_pct, stats->udp_bytes);
+    pdf_write_line(page1, font_reg, 10, 60, y, buf); y -= 15;
+
+    snprintf(buf, sizeof(buf), "- Inne protokoly (np. ARP, ICMP): %lu pakietow", stats->other_packets);
+    pdf_write_line(page1, font_reg, 10, 60, y, buf); y -= 25;
+
+    // Sekcja 2: Wykryte nieprawidlowosci
+    pdf_write_line(page1, font_bold, 13, 50, y, "2. Wykryte nieprawidlowosci i anomalie");
+    y -= 18;
+
+    snprintf(buf, sizeof(buf), "- Retransmisje TCP (zduplikowane numery SEQ): %lu", stats->tcp_retransmissions);
+    pdf_write_line(page1, font_reg, 10, 60, y, buf); y -= 15;
+
+    int alerts_found = 0;
+    char ip_str[INET_ADDRSTRLEN];
+    for (size_t i = 0; i < host_count; i++) {
+        if (hosts[i].syn_count >= 10) {
+            inet_ntop(AF_INET, &hosts[i].ip, ip_str, sizeof(ip_str));
+            snprintf(buf, sizeof(buf),
+                     "[ALERT] Podejrzenie skanowania portow TCP SYN z IP %s (%lu pakietow SYN)",
+                     ip_str, hosts[i].syn_count);
+            HPDF_Page_SetRGBFill(page1, 0.8, 0.1, 0.1);
+            pdf_write_line(page1, font_bold, 10, 60, y, buf);
+            HPDF_Page_SetRGBFill(page1, 0.0, 0.0, 0.0);
+            y -= 15;
+            alerts_found++;
+        }
+    }
+    if (alerts_found == 0) {
+        pdf_write_line(page1, font_reg, 10, 60, y, "- Nie wykryto skanowania portow TCP SYN.");
+        y -= 15;
+    }
+    y -= 10;
+
+    // Sekcja 3: Top 5 zrodlowych adresow IP
+    pdf_write_line(page1, font_bold, 13, 50, y, "3. Top 5 najbardziej aktywnych adresow IP");
+    y -= 18;
+    size_t limit = host_count < 5 ? host_count : 5;
+    for (size_t i = 0; i < limit; i++) {
+        inet_ntop(AF_INET, &hosts[i].ip, ip_str, sizeof(ip_str));
+        snprintf(buf, sizeof(buf), "%zu. %-16s | Pakiety: %-6lu | Bajty: %-8lu | SYN-only: %lu",
+                 i + 1, ip_str, hosts[i].packets, hosts[i].bytes, hosts[i].syn_count);
+        pdf_write_line(page1, font_reg, 10, 60, y, buf);
+        y -= 14;
+    }
+    y -= 15;
+
+    // Osadzenie Wykresu 1 na dole strony 1
+    HPDF_Image img1 = HPDF_LoadPngImageFromFile(pdf, "wykres_ruch_czas.png");
+    if (img1) {
+        float img_w = 490;
+        float img_h = 245;
+        HPDF_Page_DrawImage(page1, img1, 50, y - img_h, img_w, img_h);
+    }
+
+    // === STRONA 2: Pozostale wykresy ===
+    HPDF_Page page2 = HPDF_AddPage(pdf);
+    HPDF_Page_SetSize(page2, HPDF_PAGE_SIZE_A4, HPDF_PAGE_PORTRAIT);
+    float y2 = HPDF_Page_GetHeight(page2) - 50;
+
+    pdf_write_line(page2, font_bold, 14, 50, y2, "4. Rozklad protokolow oraz aktywnosc hostow");
+    y2 -= 20;
+
+    HPDF_Image img2 = HPDF_LoadPngImageFromFile(pdf, "wykres_protokoly.png");
+    if (img2) {
+        HPDF_Page_DrawImage(page2, img2, 50, y2 - 250, 490, 245);
+        y2 -= 275;
+    }
+
+    HPDF_Image img3 = HPDF_LoadPngImageFromFile(pdf, "wykres_top_ip.png");
+    if (img3) {
+        HPDF_Page_DrawImage(page2, img3, 50, y2 - 250, 490, 245);
+    }
+
+    if (HPDF_SaveToFile(pdf, "raport_analizy.pdf") == HPDF_OK) {
+        printf("Wygenerowano raport PDF: raport_analizy.pdf\n");
+    } else {
+        fprintf(stderr, "Blad zapisu pliku raport_analizy.pdf\n");
+    }
+
+    HPDF_Free(pdf);
 }
 
 int main(int argc, char *argv[]) {
@@ -258,7 +386,6 @@ int main(int argc, char *argv[]) {
                 if (src_host) src_host->syn_count++;
             }
 
-            // Wykrywanie retransmisji (powtorzony seq z danymi dla tego samego polaczenia)
             uint32_t seq_num = ntohl(tcp->seq);
             if (payload_len > 0) {
                 for (size_t i = 0; i < hist_count; i++) {
@@ -295,27 +422,10 @@ int main(int argc, char *argv[]) {
     }
 
     pcap_close(handle);
-
     qsort(hosts, host_count, sizeof(HostStats), cmp_hosts);
 
-    printf("=== PODSUMOWANIE ANALIZY ===\n");
-    printf("Czas trwania      : %.3f s\n", stats.last_ts - stats.first_ts);
-    printf("Pakiety razem     : %lu (%lu B)\n", stats.total_packets, stats.total_bytes);
-    printf("TCP / UDP / Inne  : %lu / %lu / %lu\n",
-           stats.tcp_packets, stats.udp_packets, stats.other_packets);
-    printf("Retransmisje TCP  : %lu\n", stats.tcp_retransmissions);
-    printf("Pakiety SYN-only  : %lu\n", stats.tcp_syn_only);
-
-    char ip_str[INET_ADDRSTRLEN];
-    for (size_t i = 0; i < host_count; i++) {
-        if (hosts[i].syn_count >= 10) {
-            inet_ntop(AF_INET, &hosts[i].ip, ip_str, sizeof(ip_str));
-            printf("[!] ALERT: Podejrzenie skanowania portow z IP %s (%lu pakietow SYN)\n",
-                   ip_str, hosts[i].syn_count);
-        }
-    }
-
     generate_charts(&stats, buckets, num_buckets, hosts, host_count);
+    generate_pdf_report(argv[1], &stats, hosts, host_count);
 
     free(buckets);
     return 0;

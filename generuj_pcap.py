@@ -1,3 +1,5 @@
+#Program wyłącznie do celów testowych. Generuje przykładowy plik pcap do analizy.
+
 from scapy.all import IP, TCP, UDP, Ether, wrpcap
 import time
 
