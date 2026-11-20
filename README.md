@@ -22,3 +22,13 @@ Po zakończeniu analizy w katalogu roboczym generowane są:
 * `wykres_ruch_czas.png` – natężenie ruchu TCP i UDP w czasie,
 * `wykres_protokoly.png` – podział liczby pakietów według protokołu,
 * `wykres_top_ip.png` – zestawienie 5 najbardziej aktywnych źródłowych adresów IP.
+
+## Generowanie danych testowych (opcjonalnie)
+
+W repozytorium znajduje się pomocniczy skrypt `generuj_pcap.py` (wymagający biblioteki `scapy`), który tworzy syntetyczny plik `idealny_test.pcap` zawierający normalny ruch TCP/UDP, retransmisje pakietów oraz symulację skanowania portów TCP SYN:
+
+```bash
+sudo apt install -y python3-scapy
+python3 generuj_pcap.py
+./analyzer idealny_test.pcap
+```
